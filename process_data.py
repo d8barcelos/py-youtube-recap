@@ -1,36 +1,77 @@
 import pandas as pd
+import json
 from datetime import datetime
 
 def load_data(file_path):
     """Carrega e processa o arquivo JSON do histórico do YouTube."""
-    # Ler o arquivo JSON
-    data = pd.read_json(file_path)
+    # Ler o arquivo JSON completo
+    with open(file_path, 'r', encoding='utf-8') as file:
+        try:
+            data = json.load(file)
+        except json.JSONDecodeError:
+            raise ValueError("Erro ao ler o arquivo JSON. Verifique se o formato está correto.")
 
-    # Filtrar apenas entradas relacionadas ao YouTube
-    df = data[data['header'] == 'YouTube']
-
-    # Transformar subtítulos (nome do canal) em uma string
-    df['channel'] = df['subtitles'].apply(lambda x: x[0]['name'] if isinstance(x, list) and len(x) > 0 else None)
-
+    # Converter para DataFrame
+    df = pd.DataFrame(data)
+    
     # Converter o campo 'time' para datetime
     df['time'] = pd.to_datetime(df['time'], errors='coerce')
+    df = df.dropna(subset=['time'])
+    
+    # Extrair informações temporais
     df['date'] = df['time'].dt.date
     df['month'] = df['time'].dt.month
     df['year'] = df['time'].dt.year
+    df['hour'] = df['time'].dt.hour
+    df['weekday'] = df['time'].dt.day_name()
+    
+    # Extrair informações do canal de forma segura
+    def extract_channel(row):
+        try:
+            if isinstance(row['subtitles'], list) and len(row['subtitles']) > 0:
+                return row['subtitles'][0]['name']
+        except (KeyError, TypeError, IndexError):
+            pass
+        return 'Desconhecido'
+    
+    df['channel'] = df.apply(extract_channel, axis=1)
+    
+    # Identificar a origem (YouTube ou YouTube Music)
+    def identify_source(title_url):
+        try:
+            if 'music.youtube.com' in str(title_url):
+                return 'YouTube Music'
+            return 'YouTube'
+        except:
+            return 'YouTube'
+    
+    df['platform'] = df['titleUrl'].apply(identify_source)
+    
+    return df[['title', 'channel', 'time', 'date', 'month', 'year', 'hour', 'weekday', 'platform']]
 
-    # Filtrar apenas o ano atual (2024)
-    df = df[df['year'] == 2024]
+def get_insights(df, year=None):
+    """Gera insights detalhados do histórico."""
+    if year:
+        df = df[df['year'] == year]
+    
+    if df.empty:
+        return {"Erro": "Nenhum dado encontrado para o período especificado"}
 
-    # Selecionar as colunas relevantes
-    return df[['title', 'channel', 'time', 'date', 'month', 'year']]
+    monthly_counts = df.groupby('month').size()
+    top_channels = df['channel'].value_counts().head(10)
+    top_videos = df['title'].value_counts().head(10)
+    hourly_activity = df['hour'].value_counts().sort_index()
+    weekday_activity = df['weekday'].value_counts()
+    platform_dist = df['platform'].value_counts()
 
-def get_insights(df):
-    """Gera insights básicos do histórico (somente 2024)."""
-    insights = {
-        "Total de vídeos assistidos (2024)": len(df),
-        "Mês mais ativo (2024)": df['month'].mode()[0],
-        "Vídeo mais assistido (2024)": df['title'].mode()[0],
-        "Canal mais assistido (2024)": df['channel'].mode()[0]
+    return {
+        "total_videos": len(df),
+        "monthly_dist": monthly_counts.to_dict(),
+        "top_channels": top_channels.to_dict(),
+        "top_videos": top_videos.to_dict(),
+        "hourly_activity": hourly_activity.to_dict(),
+        "weekday_activity": weekday_activity.to_dict(),
+        "platform_dist": platform_dist.to_dict(),
+        "avg_videos_per_month": len(df) / df['month'].nunique(),
+        "active_months": sorted(df['month'].unique().tolist())
     }
-    return insights
-
